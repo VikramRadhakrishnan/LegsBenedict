@@ -1,26 +1,27 @@
 # TODO: your agent here!
-from model import Actor, Critic
-from noise_model import OUNoise
-from replay_buffer import ReplayBuffer
+from models.model import Actor, Critic
+from utils.noise_model import OUNoise
+from utils.replay_buffer import ReplayBuffer
 
 import numpy as np
 
 # Deep Deterministic Policy Gradients Agent
 class DDPG():
     """Reinforcement Learning agent that learns using DDPG."""
-    def __init__(self, task):
-        self.task = task
-        self.state_size = task.state_size
-        self.action_size = task.action_size
-        self.action_low = task.action_low
-        self.action_high = task.action_high
+    def __init__(self, env, actor_lr, critic_lr, mu, theta, sigma, buffer_size, batch_size,
+                 gamma, tau):
+        self.env = env
+        self.state_size = env.observation_space.shape[0]
+        self.action_size = env.action_space.shape[0]
+        self.action_low = env.action_space.low
+        self.action_high = env.action_space.high
         
-        self.actor_lr = 0.0001
-        self.critic_lr = 0.001
+        self.actor_lr = actor_lr
+        self.critic_lr = critic_lr
 
         # Actor (Policy) Model
-        self.actor_local = Actor(self.state_size, self.action_size, self.action_low, self.action_high, self.actor_lr)
-        self.actor_target = Actor(self.state_size, self.action_size, self.action_low, self.action_high, self.actor_lr)
+        self.actor_local = Actor(self.state_size, self.action_size, self.actor_lr)
+        self.actor_target = Actor(self.state_size, self.action_size, self.actor_lr)
 
         # Critic (Value) Model
         self.critic_local = Critic(self.state_size, self.action_size, self.critic_lr)
@@ -31,41 +32,41 @@ class DDPG():
         self.actor_target.model.set_weights(self.actor_local.model.get_weights())
 
         # Noise process
-        self.exploration_mu = 0
-        self.exploration_theta = 0.15
-        self.exploration_sigma = 0.2
+        self.exploration_mu = mu
+        self.exploration_theta = theta
+        self.exploration_sigma = sigma
         self.noise = OUNoise(self.action_size, self.exploration_mu, self.exploration_theta, self.exploration_sigma)
 
         # Replay memory
-        self.buffer_size = 100000
-        self.batch_size = 64
+        self.buffer_size = buffer_size
+        self.batch_size = batch_size
         self.memory = ReplayBuffer(self.buffer_size, self.batch_size)
 
         # Algorithm parameters
-        self.gamma = 0.99  # discount factor
-        self.tau = 0.001 #0.01  # for soft update of target parameters
+        self.gamma = gamma  # discount factor
+        self.tau = tau      # for soft update of target parameters
         
         # Score tracker and learning parameters
         self.best_score = -np.inf
         self.score = 0
 
     def reset_episode(self):
+        """Reset the agent."""
         self.total_reward = 0.0
         self.count = 0
         self.noise.reset()
-        state = self.task.reset()
+        state = self.env.reset()
         self.last_state = state
         return state
 
     def step(self, action, reward, next_state, done):
-         # Save experience / reward
+        """Save experience / reward."""
         self.memory.add(self.last_state, action, reward, next_state, done)
-        
         self.total_reward += reward
         self.count += 1
         
         if done:
-            self.score = self.total_reward / float(self.count) if self.count else 0.0 # Calculate the running average reward
+            self.score = self.total_reward # Calculate the total reward
             if self.score > self.best_score:
                 self.best_score = self.score
 
