@@ -66,7 +66,8 @@ class DDPG():
         self.count += 1
         
         if done:
-            self.score = self.total_reward # Calculate the total reward
+            # Calculate the average reward per step
+            self.score = (self.total_reward / self.count) if self.count > 0 else 0.0
             if self.score > self.best_score:
                 self.best_score = self.score
 
@@ -104,7 +105,7 @@ class DDPG():
         # Train actor model (local)
         action_gradients = np.reshape(self.critic_local.get_action_gradients([states, actions, 0]), (-1, self.action_size))
         self.actor_local.train_fn([states, action_gradients, 1])  # custom training function
-
+        
         # Soft-update target models
         self.soft_update(self.critic_local.model, self.critic_target.model)
         self.soft_update(self.actor_local.model, self.actor_target.model)   

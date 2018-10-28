@@ -1,4 +1,4 @@
-from keras import layers, models, optimizers
+from keras import layers, models, optimizers, regularizers
 from keras import backend as K
 from keras.initializers import RandomUniform
 
@@ -34,10 +34,14 @@ class Actor:
         net = layers.BatchNormalization()(states)
         
         # Add hidden layers
-        net = layers.Dense(units=400, activation='relu')(net)
+        net = layers.Dense(units=512)(net)
         net = layers.BatchNormalization()(net)
-        net = layers.Dense(units=300, activation='relu')(net)
+        net = layers.LeakyReLU()(net)
+        #net = layers.BatchNormalization()(net)
+        net = layers.Dense(units=256)(net)
         net = layers.BatchNormalization()(net)
+        net = layers.LeakyReLU()(net)
+        #net = layers.BatchNormalization()(net)
 
         # Add final output layer with tanh activation
         initializer = RandomUniform(minval=-3e-3, maxval=3e-3)
@@ -87,20 +91,27 @@ class Critic:
         actions = layers.Input(shape=(self.action_size,), name='actions')
 
         # Add hidden layer for state pathway
-        net_states = layers.Dense(units=400, activation='relu')(states)
+        net_states = layers.BatchNormalization()(states)
+        net_states = layers.Dense(units=512)(net_states)
         net_states = layers.BatchNormalization()(net_states)
+        net_states = layers.LeakyReLU()(net_states)
 
         # Combine state and action pathways
         net = layers.Concatenate()([net_states, actions])
-        net = layers.Activation('relu')(net)
 
-        # Add more layers to the combined network if needed
-        net = layers.Dense(units=300, activation='relu')(net)
+        # Add more layers to the combined network
+        net = layers.Dense(units=256)(net)
+        #net_states = layers.BatchNormalization()(net)
+        net = layers.LeakyReLU()(net)
+        #net = layers.BatchNormalization()(net)
+        #net = layers.Dense(units=128)(net)
+        #net_states = layers.BatchNormalization()(net)
+        #net = layers.LeakyReLU()(net)
         #net = layers.BatchNormalization()(net)
 
         # Add final output layer to produce action values (Q values)
         initializer = RandomUniform(minval=-3e-3, maxval=3e-3)
-        Q_values = layers.Dense(units=1, kernel_initializer=initializer, name='q_values')(net)
+        Q_values = layers.Dense(units=1, kernel_initializer=initializer, kernel_regularizer=regularizers.l2(0.0001), name='q_values')(net)
 
         # Create Keras model
         self.model = models.Model(inputs=[states, actions], outputs=Q_values)
