@@ -9,3 +9,10 @@ The agent in this project is comprised of two learners. The "actor" is a neural 
 
 ## The environment
 The environment I am using to train my agent is the [BipedalWalker-v2](https://gym.openai.com/envs/BipedalWalker-v2/) environment from OpenAI Gym. The robot is rewarded for moving forward for a total of 300 points up to the far end. If the robot falls, it gets -100 points. Applying motor torques also costs some points. The state (observable) consists of hull angle speed, angular velocity, horizontal speed, vertical speed, position of joints and joints angular speed, legs contact with ground, and 10 lidar rangefinder measurements.
+
+## Results
+At the time of submittung this midterm exam, the robot has still not learned how to walk :( The biggest hurdle to overcome is that the robot learns that staying still and just waiting out the 1600 steps before the episode ends gives a better result than trying to move and falling over, so that's just what it does.  
+Some things to try, to potentially improve its performance would be:
+1. Experiment more with the hyperparameters. Although this currently seems to be an exercise in futility.
+2. Try some reward shaping. This is a bit complicated though because it's hard to determine which parameters to focus on when shaping the reward.
+3. Try a different algorithm altogether. I think this would be my best approach. DDPG seemed great for continuous control in an RL task, but I have now come to learn about algorithms such as [Augmented Random Search](https://arxiv.org/abs/1803.07055) that show a much better performance on this particular task. I will try to implement this in the future.
