@@ -1,121 +1,225 @@
-# TODO: your agent here!
 from models.model import Actor, Critic
-from utils.noise_model import OUNoise
+from utils.noise_model import OUNoise, GaussianNoise
 from utils.replay_buffer import ReplayBuffer
+
+import tensorflow as tf
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.losses import MSE
 
 import numpy as np
 
 # Deep Deterministic Policy Gradients Agent
 class DDPG():
     """Reinforcement Learning agent that learns using DDPG."""
-    def __init__(self, env, actor_lr, critic_lr, mu, theta, sigma, buffer_size, batch_size,
-                 gamma, tau):
-        self.env = env
-        self.state_size = env.observation_space.shape[0]
-        self.action_size = env.action_space.shape[0]
-        self.action_low = env.action_space.low
-        self.action_high = env.action_space.high
+    def __init__(self, state_size, action_size, actor_lr, critic_lr,
+                 random_seed, mu, theta, sigma, buffer_size, batch_size,
+                 gamma, tau, n_time_steps, n_learn_updates, device):
+
+        self.state_size = state_size
+        self.action_size = action_size
         
         self.actor_lr = actor_lr
         self.critic_lr = critic_lr
 
-        # Actor (Policy) Model
-        self.actor_local = Actor(self.state_size, self.action_size, self.actor_lr)
-        self.actor_target = Actor(self.state_size, self.action_size, self.actor_lr)
+        # Actor Network (w/ Target Network)
+        self.actor_local = Actor(state_size, action_size, name="Actor_local")
+        self.actor_target = Actor(state_size, action_size, name="Actor_target")
+        self.actor_optimizer = Adam(learning_rate=self.actor_lr)
 
-        # Critic (Value) Model
-        self.critic_local = Critic(self.state_size, self.action_size, self.critic_lr)
-        self.critic_target = Critic(self.state_size, self.action_size, self.critic_lr)
-
+        # Critic Network (w/ Target Network)
+        self.critic_local = Critic(state_size, action_size, name="Critic_local")
+        self.critic_target = Critic(state_size, action_size, name="Critic_target")
+        self.critic_optimizer = Adam(learning_rate=self.critic_lr)
+        
         # Initialize target model parameters with local model parameters
         self.critic_target.model.set_weights(self.critic_local.model.get_weights())
         self.actor_target.model.set_weights(self.actor_local.model.get_weights())
 
         # Noise process
-        self.exploration_mu = mu
-        self.exploration_theta = theta
-        self.exploration_sigma = sigma
-        self.noise = OUNoise(self.action_size, self.exploration_mu, self.exploration_theta, self.exploration_sigma)
+        self.noise = OUNoise(action_size, random_seed, mu, theta, sigma)
 
         # Replay memory
-        self.buffer_size = buffer_size
-        self.batch_size = batch_size
-        self.memory = ReplayBuffer(self.buffer_size, self.batch_size)
+        self.batch_size = int(batch_size)
+        self.buffer_size = int(buffer_size)
+        self.memory = ReplayBuffer(self.buffer_size, self.batch_size, random_seed)
 
         # Algorithm parameters
-        self.gamma = gamma  # discount factor
-        self.tau = tau      # for soft update of target parameters
-        
-        # Score tracker and learning parameters
-        self.best_score = -np.inf
-        self.score = 0
+        self.gamma = gamma                     # discount factor
+        self.tau = tau                         # for soft update of target parameters
+        self.n_time_steps = n_time_steps       # number of time steps before updating network parameters
+        self.n_learn_updates = n_learn_updates # number of updates per learning step
 
-    def reset_episode(self):
+        # Device
+        self.device = device
+
+    def reset(self):
         """Reset the agent."""
-        self.total_reward = 0.0
-        self.count = 0
         self.noise.reset()
-        state = self.env.reset()
-        self.last_state = state
-        return state
 
-    def step(self, action, reward, next_state, done):
-        """Save experience / reward."""
-        self.memory.add(self.last_state, action, reward, next_state, done)
-        self.total_reward += reward
-        self.count += 1
+    def step(self, time_step, state, action, reward, next_state, done):
+        """Save experience in replay memory, and use random sample from buffer to learn."""
+        # Save experience / reward
+        self.memory.add(state[:], action[:], reward, next_state[:], done)
         
-        if done:
-            # Calculate the average reward per step
-            self.score = (self.total_reward / self.count) if self.count > 0 else 0.0
-            if self.score > self.best_score:
-                self.best_score = self.score
+        if time_step % self.n_time_steps != 0:
+            return
 
         # Learn, if enough samples are available in memory
         if len(self.memory) > self.batch_size:
-            experiences = self.memory.sample()
-            self.learn(experiences)
+            
+            # Train the network for a number of epochs specified by the parameter
+            for i in range(self.n_learn_updates):
+                experiences = self.memory.sample()
+                self.learn(experiences, self.gamma)
 
-        # Roll over last state and action
-        self.last_state = next_state
+    def act(self, state, add_noise=True):
+        """Returns actions for given state as per current policy."""
+        state = np.expand_dims(state, axis=0)
+        action = self._act_tf(tf.constant(state))
+        action = action.numpy()[0]
 
-    def act(self, state):
-        """Returns actions for given state(s) as per current policy."""
-        state = np.reshape(state, [-1, self.state_size])
-        action = self.actor_local.model.predict(state)[0]
-        return list(action + self.noise.sample())  # add some noise for exploration
+        if add_noise:
+            action += self.noise.sample()
 
-    def learn(self, experiences):
-        """Update policy and value parameters using given batch of experience tuples."""
-        # Convert experience tuples to separate arrays for each element (states, actions, rewards, etc.)
-        states = np.vstack([e.state for e in experiences if e is not None])
-        actions = np.array([e.action for e in experiences if e is not None]).astype(np.float32).reshape(-1, self.action_size)
-        rewards = np.array([e.reward for e in experiences if e is not None]).astype(np.float32).reshape(-1, 1)
-        dones = np.array([e.done for e in experiences if e is not None]).astype(np.uint8).reshape(-1, 1)
-        next_states = np.vstack([e.next_state for e in experiences if e is not None])
+        action = action.clip(-1, 1)
 
-        # Get predicted next-state actions and Q values from target models
-        actions_next = self.actor_target.model.predict_on_batch(next_states)
-        Q_targets_next = self.critic_target.model.predict_on_batch([next_states, actions_next])
-
-        # Compute Q targets for current states and train critic model (local)
-        Q_targets = rewards + self.gamma * Q_targets_next * (1 - dones)
-        self.critic_local.model.train_on_batch(x=[states, actions], y=Q_targets)
-
-        # Train actor model (local)
-        action_gradients = np.reshape(self.critic_local.get_action_gradients([states, actions, 0]), (-1, self.action_size))
-        self.actor_local.train_fn([states, action_gradients, 1])  # custom training function
+        return action
         
-        # Soft-update target models
-        self.soft_update(self.critic_local.model, self.critic_target.model)
-        self.soft_update(self.actor_local.model, self.actor_target.model)   
+    @tf.function
+    def _act_tf(self, state):
+        return self.actor_local.model(state)
 
-    def soft_update(self, local_model, target_model):
-        """Soft update model parameters."""
-        local_weights = np.array(local_model.get_weights())
-        target_weights = np.array(target_model.get_weights())
+    def learn(self, experiences, gamma):
+        """Update policy and value parameters using given batch of experience tuples.
+        Q_targets = r + γ * critic_target(next_state, actor_target(next_state))
+        where:
+            actor_target(state) -> action
+            critic_target(state, action) -> Q-value
+        Params
+        ======
+            experiences : tuple of (s, a, r, s', done) tuples 
+            gamma (float): discount factor
+        """
+        self._learn_tf(experiences, tf.constant(self.gamma, dtype=tf.float64)) 
 
-        assert len(local_weights) == len(target_weights), "Local and target model parameters must have the same size"
+    @tf.function
+    def _learn_tf(self, experiences, gamma):
+        states, actions, rewards, next_states, dones = experiences
 
-        new_weights = self.tau * local_weights + (1 - self.tau) * target_weights
-        target_model.set_weights(new_weights)
+        # ---------------------------- update critic ---------------------------- #
+        with tf.GradientTape() as tape:
+            # Get predicted next-state actions and Q values from target models
+            actions_next = self.actor_target.model(next_states)
+            Q_targets_next = self.critic_target.model([next_states, actions_next])
+            # Compute Q targets for current states (y_i)
+            Q_targets = rewards + (gamma * Q_targets_next * (1 - dones))
+            # Compute critic loss
+            Q_expected = self.critic_local.model([states, actions])
+            critic_loss = MSE(Q_expected, Q_targets)
+        
+        # Minimize the loss
+        critic_grad = tape.gradient(critic_loss, self.critic_local.model.trainable_variables)
+        self.critic_optimizer.apply_gradients(zip(critic_grad, self.critic_local.model.trainable_variables))
+
+        # ---------------------------- update actor ---------------------------- #
+        with tf.GradientTape() as tape:
+            # Compute actor loss
+            actions_pred = self.actor_local.model(states)
+            actor_loss = -tf.reduce_mean(self.critic_local.model([states, actions_pred]))
+
+        # Minimize the loss
+        actor_grad = tape.gradient(actor_loss, self.actor_local.model.trainable_variables)
+        self.actor_optimizer.apply_gradients(zip(actor_grad, self.actor_local.model.trainable_variables))
+
+        # ----------------------- update target networks ----------------------- #
+        self.soft_update(self.critic_local.model, self.critic_target.model, self.tau)
+        self.soft_update(self.actor_local.model, self.actor_target.model, self.tau)
+
+    def soft_update(self, local_model, target_model, tau):
+        """Soft update model parameters.
+        θ_target = τ*θ_local + (1 - τ)*θ_target
+        Params
+        ======
+            local_model: TF2 model
+            target_model: TF2 model
+            tau (float): interpolation parameter 
+        """
+        for target_var, local_var in zip(target_model.weights, local_model.weights):
+            target_var.assign(tau * local_var + (1.0 - tau) * target_var)
+
+class TD3(DDPG):
+    def __init__(self, state_size, action_size, actor_lr, critic_lr,
+                 random_seed, mu, sigma, buffer_size, batch_size,
+                 gamma, tau, n_time_steps, n_learn_updates, device,
+                 actor_update_freq):
+        super(TD3, self).__init__(state_size, action_size, actor_lr, critic_lr,
+                                  random_seed, mu, sigma, buffer_size, batch_size,
+                                  gamma, tau, n_time_steps, n_learn_updates, device)
+
+        # Critic Network #2 (w/ Target Network)
+        self.critic2_local = Critic(state_size, action_size, name="Critic2_local")
+        self.critic2_target = Critic(state_size, action_size, name="Critic2_target")
+
+        self.train_step = 0
+        self.actor_update_freq = actor_update_freq
+
+    def learn(self, experiences, gamma):
+        """Update policy and value parameters using given batch of experience tuples.
+        target_next_actions = actor_target(next_state) + e
+        Q'_min - min(critic_target1, critic_target2)(next_state, target_next_actions)
+        Q_targets = r + γ * Q'_min
+        where:
+            actor_target(state) -> action
+            critic_target1(state, action) -> Q-value1
+            critic_target2(state, action) -> Q-value2
+        Params
+        ======
+            experiences : tuple of (s, a, r, s', done) tuples 
+            gamma (float): discount factor
+            e: noise
+        """
+        self.train_step += 1
+        self._learn_tf(experiences, tf.constant(self.gamma, dtype=tf.float64))
+
+    @tf.function
+    def _learn_tf(self, experiences, gamma):
+        states, actions, rewards, next_states, dones = experiences
+
+        # ---------------------------- update critic ---------------------------- #
+        with tf.GradientTape(persistent=True) as tape:
+            # Get predicted next-state actions and Q values from target models
+            actions_next = self.actor_target.model(next_states)
+            actions_next += tf.clip_by_value(tf.random.normal(shape=tf.shape(actions_next), mean=0.0, stddev=1e-3, dtype=tf.float64), -1e-3, 1e-3)
+            Q1 = self.critic_target.model([next_states, actions_next])
+            Q2 = self.critic2_target.model([next_states, actions_next])
+            Q_targets_next = tf.math.minimum(Q1, Q2)
+            # Compute Q targets for current states (y_i)
+            Q_targets = rewards + (gamma * Q_targets_next * (1 - dones))
+            # Compute critic loss
+            Q1_expected = self.critic_local.model([states, actions])
+            Q2_expected = self.critic2_local.model([states, actions])
+            critic_loss = MSE(Q1_expected, Q_targets) + MSE(Q2_expected, Q_targets)
+        
+        # Minimize the loss
+        critic1_grad = tape.gradient(critic_loss, self.critic_local.model.trainable_variables)
+        critic2_grad = tape.gradient(critic_loss, self.critic2_local.model.trainable_variables)
+        self.critic_optimizer.apply_gradients(zip(critic1_grad, self.critic_local.model.trainable_variables))
+        self.critic_optimizer.apply_gradients(zip(critic2_grad, self.critic2_local.model.trainable_variables))
+
+        if self.train_step % self.actor_update_freq:
+            # ---------------------------- update actor ---------------------------- #
+            with tf.GradientTape() as tape:
+                # Compute actor loss
+                actions_pred = self.actor_local.model(states)
+                actor_loss = -tf.reduce_mean(self.critic_local.model([states, actions_pred]))
+
+            # Minimize the loss
+            actor_grad = tape.gradient(actor_loss, self.actor_local.model.trainable_variables)
+            self.actor_optimizer.apply_gradients(zip(actor_grad, self.actor_local.model.trainable_variables))
+
+            # ----------------------- update target networks ----------------------- #
+            self.soft_update(self.critic_local.model, self.critic_target.model, self.tau)
+            self.soft_update(self.critic2_local.model, self.critic_target.model, self.tau)
+            self.soft_update(self.actor_local.model, self.actor_target.model, self.tau)
+
+

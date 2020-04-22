@@ -1,28 +1,32 @@
-from keras import layers, models, optimizers, regularizers
-from keras import backend as K
-from keras.initializers import RandomUniform
+import tensorflow as tf
+import numpy as np
+from tensorflow.keras.layers import Dense, Input, Concatenate, BatchNormalization, Activation, LeakyReLU
+from tensorflow.keras import Model
+from tensorflow.keras import regularizers
+
+tf.keras.backend.set_floatx('float64')
 
 # Actor model defined using Keras
 
 class Actor:
     """Actor (Policy) Model."""
 
-    def __init__(self, state_size, action_size, lrate):
-        """Initialize parameters and build model.
+    def __init__(self, state_size, action_size, fc1_units=256, name="Actor"):
+        """Initialize parameters.
 
         Params
         ======
             state_size (int): Dimension of each state
             action_size (int): Dimension of each action
-            action_low (array): Min value of each action dimension
-            action_high (array): Max value of each action dimension
+            fc1_units (int): Dimensions of 1st hidden layer
+            fc2_units (int): Dimensions of 2nd hidden layer
+            name (string): Name of the model
         """
         # Initialize the state and action dimensions
         self.state_size = state_size
         self.action_size = action_size
-
-        # Initialize the learning rate
-        self.lrate = lrate
+        self.fc1_units = fc1_units
+        self.name = name
         
         # Build the actor model
         self.build_model()
@@ -30,100 +34,66 @@ class Actor:
     def build_model(self):
         """Build an actor (policy) network that maps states -> actions."""
         # Define input layer (states)
-        states = layers.Input(shape=(self.state_size,), name='states')
-        net = layers.BatchNormalization()(states)
+        states = Input(shape=(self.state_size,))
         
         # Add hidden layers
-        net = layers.Dense(units=512)(net)
-        net = layers.BatchNormalization()(net)
-        net = layers.LeakyReLU()(net)
-        #net = layers.BatchNormalization()(net)
-        net = layers.Dense(units=256)(net)
-        net = layers.BatchNormalization()(net)
-        net = layers.LeakyReLU()(net)
-        #net = layers.BatchNormalization()(net)
+        net = Dense(units=self.fc1_units, activation='relu', kernel_initializer='glorot_uniform')(states)
 
         # Add final output layer with tanh activation
-        initializer = RandomUniform(minval=-3e-3, maxval=3e-3)
-        actions = layers.Dense(units=self.action_size, activation='tanh',
-                               kernel_initializer=initializer, name='actions')(net)
+        actions = Dense(units=self.action_size, activation='tanh', kernel_initializer='glorot_uniform')(net)
 
         # Create Keras model
-        self.model = models.Model(inputs=states, outputs=actions)
-
-        # Define loss function using action value (Q value) gradients
-        action_gradients = layers.Input(shape=(self.action_size,))
-        loss = K.mean(-action_gradients * actions)
-
-        # Define optimizer and training function
-        optimizer = optimizers.Adam(lr=self.lrate)
-        updates_op = optimizer.get_updates(params=self.model.trainable_weights, loss=loss)
-        self.train_fn = K.function(
-            inputs=[self.model.input, action_gradients, K.learning_phase()],
-            outputs=[],
-            updates=updates_op)
+        self.model = Model(inputs=states, outputs=actions, name=self.name)
 
 # Critic model defined in Keras
 class Critic:
     """Critic (Value) Model."""
 
-    def __init__(self, state_size, action_size, lrate):
+    def __init__(self, state_size, action_size, fc1_units=256, fc2_units=256, fc3_units=128, name="Critic"):
         """Initialize parameters and build model.
 
         Params
         ======
             state_size (int): Dimension of each state
             action_size (int): Dimension of each action
+            fc1_units (int): Dimensions of 1st hidden layer
+            fc2_units (int): Dimensions of 2nd hidden layer
+            name (string): Name of the model
         """
+
         # Initialize the state and action dimensions
         self.state_size = state_size
         self.action_size = action_size
+        self.fc1_units = fc1_units
+        self.fc2_units = fc2_units
+        self.fc3_units = fc3_units
+        self.name = name
 
-        # Initialize the learning rate
-        self.lrate = lrate
-
+        # Build the critic model
         self.build_model()
 
     def build_model(self):
         """Build a critic (value) network that maps (state, action) pairs -> Q-values."""
         # Define input layers
-        states = layers.Input(shape=(self.state_size,), name='states')
-        actions = layers.Input(shape=(self.action_size,), name='actions')
+        states = Input(shape=(self.state_size,))
+        actions = Input(shape=(self.action_size,))
 
         # Add hidden layer for state pathway
-        net_states = layers.BatchNormalization()(states)
-        net_states = layers.Dense(units=512)(net_states)
-        net_states = layers.BatchNormalization()(net_states)
-        net_states = layers.LeakyReLU()(net_states)
+        net_states = Dense(units=self.fc1_units, kernel_initializer='glorot_uniform')(states)
+        net_states = LeakyReLU()(net_states)
 
         # Combine state and action pathways
-        net = layers.Concatenate()([net_states, actions])
+        net = Concatenate(axis=-1)([net_states, actions])
 
         # Add more layers to the combined network
-        net = layers.Dense(units=256)(net)
-        #net_states = layers.BatchNormalization()(net)
-        net = layers.LeakyReLU()(net)
-        #net = layers.BatchNormalization()(net)
-        #net = layers.Dense(units=128)(net)
-        #net_states = layers.BatchNormalization()(net)
-        #net = layers.LeakyReLU()(net)
-        #net = layers.BatchNormalization()(net)
-
+        net = Dense(units=self.fc2_units, kernel_initializer='glorot_uniform')(net)
+        net = LeakyReLU()(net)
+        net = Dense(units=self.fc3_units, kernel_initializer='glorot_uniform')(net)
+        net = LeakyReLU()(net)
+        
         # Add final output layer to produce action values (Q values)
-        initializer = RandomUniform(minval=-3e-3, maxval=3e-3)
-        Q_values = layers.Dense(units=1, kernel_initializer=initializer, kernel_regularizer=regularizers.l2(0.0001), name='q_values')(net)
+        Q_values = Dense(units=1, activation='linear', kernel_initializer='glorot_uniform', kernel_regularizer=regularizers.l2(0.0001))(net)
 
         # Create Keras model
-        self.model = models.Model(inputs=[states, actions], outputs=Q_values)
+        self.model = Model(inputs=[states, actions], outputs=Q_values, name=self.name)
 
-        # Define optimizer and compile model for training with built-in loss function
-        optimizer = optimizers.Adam(lr=self.lrate)
-        self.model.compile(optimizer=optimizer, loss='mse')
-
-        # Compute action gradients (derivative of Q values w.r.t. to actions)
-        action_gradients = K.gradients(Q_values, actions)
-
-        # Define an additional function to fetch action gradients (to be used by actor model)
-        self.get_action_gradients = K.function(
-            inputs=[*self.model.input, K.learning_phase()],
-            outputs=action_gradients)
